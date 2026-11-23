@@ -1,0 +1,6 @@
+.crew-layout {display:grid;grid-template-columns:minmax(0,1.85fr) minmax(230px,1fr);gap:17px;align-items:start}
+.crew-strip {background:var(--sheet);border-inline-start:4px solid var(--blue);padding:12px 15px;margin-bottom:11px}
+.crew-strip article {border-block-start:1px solid var(--line);padding:8px 0}
+.crew-strip p {margin:5px 0}
+.crew-strip .allocation-stale {color:var(--ember)}
+@media(max-width:710px){.crew-layout {grid-template-columns:1fr}}

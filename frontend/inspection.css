@@ -1,0 +1,7 @@
+.survey-layout {display:grid;grid-template-columns:minmax(0,2fr) minmax(230px,1fr);gap:19px;align-items:start}
+.survey-sheet {background:var(--sheet);border:1px solid var(--line);padding:14px;margin-bottom:12px}
+.surface-grid {display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+.surface-grid div {background:var(--pale);padding:8px;font-size:.84rem}
+.surface-grid dd {margin:0}
+.surface-grid .damaged-location {background:var(--ember-sheet);color:var(--ember)}
+@media(max-width:720px){.survey-layout {grid-template-columns:1fr}}

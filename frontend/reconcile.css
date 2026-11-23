@@ -1,0 +1,7 @@
+.recon-layout {display:grid;grid-template-columns:minmax(0,1.8fr) minmax(220px,1fr);gap:19px;align-items:start}
+.meter-case {background:var(--sheet);border-block-start:3px solid var(--blue);padding:13px;margin-bottom:11px}
+.meter-case.pending {border-block-start-color:var(--ember)}
+.meter-case dl {display:flex;flex-wrap:wrap;gap:18px;background:var(--pale);padding:9px}
+.meter-case dt {font-size:.8rem}
+.meter-case dd {margin:0;font-weight:700}
+@media(max-width:710px){.recon-layout {grid-template-columns:1fr}}
