@@ -25,14 +25,18 @@ def list_bookings(cx, shift_id):
     ).fetchall()
 
 
-def check_open_shift(shift):
+def check_open_shift(shift, *, allow_suspended=False):
     if shift["status"] == "confirmed":
         raise HTTPException(409, "班次已签署并锁定")
+    if shift["status"] == "suspended" and not allow_suspended:
+        raise HTTPException(409, "班次暂停执行，须由复核员签署补单放行")
 
 
 def touch_shift(cx, shift_id):
     cx.execute(
-        "UPDATE water_shifts SET status='draft',revision=revision+1 WHERE id=%s", (shift_id,)
+        """UPDATE water_shifts SET revision=revision+1,
+                  status=CASE WHEN status='suspended' THEN 'suspended' ELSE 'draft' END
+           WHERE id=%s""", (shift_id,)
     )
 
 
@@ -54,7 +58,7 @@ def verify_itinerary(shift, rows):
 
 
 def add_booking(cx, shift, body):
-    check_open_shift(shift)
+    check_open_shift(shift, allow_suspended=True)
     bookings = list_bookings(cx, shift["id"])
     proposal = {**body.model_dump(), "refill_reason": None}
     verify_itinerary(shift, [*bookings, proposal])
@@ -68,7 +72,7 @@ def add_booking(cx, shift, body):
 
 
 def revise_booking(cx, shift, booking_id, body):
-    check_open_shift(shift)
+    check_open_shift(shift, allow_suspended=True)
     bookings = list_bookings(cx, shift["id"])
     slot = next((row for row in bookings if row["id"] == booking_id), None)
     if slot is None:
@@ -85,7 +89,9 @@ def revise_booking(cx, shift, booking_id, body):
 
 
 def confirm_shift(cx, rink, shift, forecast_id, actor):
-    check_open_shift(shift)
+    from signing import shift_started
+    if shift["status"] == "suspended":
+        raise HTTPException(409, "班次暂停执行，须由复核员签署补单放行")
     forecast = cx.execute(
         "SELECT * FROM water_forecasts WHERE shift_id=%s ORDER BY id DESC LIMIT 1", (shift["id"],)
     ).fetchone()
@@ -94,7 +100,18 @@ def confirm_shift(cx, rink, shift, forecast_id, actor):
         raise HTTPException(409, "冰时或计量已变更，请以新版本重算")
     if not forecast["within_capacity"]:
         raise HTTPException(409, "分段峰值超出水箱容量，请安排补水并重算")
+    if shift["status"] == "confirmed":
+        signed = cx.execute(
+            "SELECT * FROM water_forecasts WHERE id=%s", (shift["confirmed_forecast"],)
+        ).fetchone()
+        if signed is not None and signed["meter_revision"] == forecast["meter_revision"]:
+            raise HTTPException(409, "班次已签署并锁定")
+        # A raised peak only needs a supplement while the shift has not started yet.
+        if (signed is not None and forecast["peak_segment_liters"] > signed["peak_segment_liters"]
+                and not shift_started(shift)):
+            raise HTTPException(409, "更正后峰值高于原签报，请到班次签报页登记补单")
     return cx.execute(
-        """UPDATE water_shifts SET status='confirmed',confirmed_forecast=%s,confirmed_by=%s,confirmed_at=now()
+        """UPDATE water_shifts SET status='confirmed',confirmed_forecast=%s,confirmed_by=%s,confirmed_at=now(),
+                  suspended_at=NULL,suspended_reason=NULL
            WHERE id=%s RETURNING *""", (forecast_id, actor, shift["id"])
     ).fetchone()

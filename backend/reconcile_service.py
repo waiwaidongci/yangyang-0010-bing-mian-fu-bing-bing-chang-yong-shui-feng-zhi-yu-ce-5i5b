@@ -2,6 +2,7 @@ from fastapi import HTTPException
 
 from reconcile_repository import find_register
 from schedule import get_rink
+from signing import recompute_signed
 
 
 def register_delta(opening, closing, cycle):
@@ -39,12 +40,19 @@ def compare(cx, body):
 
 
 def adjudicate(cx, code, day, verdict, actor):
-    get_rink(cx, code, lock=True)
+    rink = get_rink(cx, code, lock=True)
     row = cx.execute(
         """SELECT c.*,m.passes FROM meter_variance_cases c JOIN resurfacing_meter m
            USING (rink_code,metered_on) WHERE c.rink_code=%s AND c.metered_on=%s""", (code,day)
     ).fetchone()
-    if row is None or row["state"] != "pending":
+    if row is None:
+        raise HTTPException(409, "先登记该水票的表码核对记录")
+    if row["state"] in ("retained", "corrected"):
+        if (row["state"] == "corrected") == bool(verdict.use_measured):
+            # Retrying the same verdict must not recompute again or open a second suspension.
+            return {**row, "shift_impacts": [], "already_resolved": True}
+        raise HTTPException(409, "该水票已有不同的复核结论")
+    if row["state"] != "pending":
         raise HTTPException(409, "只有未复核的差异水票可以定案")
     corrected = row["measured_liters"] if verdict.use_measured else None
     if corrected is not None and not 20 * row["passes"] <= corrected <= 1000 * row["passes"]:
@@ -56,4 +64,6 @@ def adjudicate(cx, code, day, verdict, actor):
     ).fetchone()
     if corrected is not None:
         cx.execute("UPDATE ice_rinks SET meter_revision=meter_revision+1 WHERE code=%s", (code,))
+        revised["meter_revision"] = rink["meter_revision"] + 1
+        revised["shift_impacts"] = recompute_signed(cx, {**rink, "meter_revision": rink["meter_revision"] + 1})
     return revised

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, StringConstraints, field_validator, model
 from core import db, enqueue, require
 from forecast import evaluate, validated_history
 from schedule import add_booking, check_open_shift, confirm_shift, get_rink, list_bookings, lock_shift, revise_booking
+from signing import check_recomputable, handover, prepare, recompute_signed, sign_supplement
 
 router = APIRouter(prefix="/api")
 Read = Depends(require())
@@ -59,6 +60,10 @@ class Confirmation(BaseModel):
     forecast_id: int = Field(ge=1)
 
 
+class Supplement(Confirmation):
+    note: Description
+
+
 @router.get("/rinks")
 def rinks(_=Read):
     with db() as cx:
@@ -78,7 +83,7 @@ def meters(code: str, _=Read):
 @router.post("/rinks/{code}/meter", status_code=201)
 def meter(code: str, body: MeterEntry, _=Operator):
     with db() as cx:
-        get_rink(cx, code, lock=True)
+        rink = get_rink(cx, code, lock=True)
         new = cx.execute(
             """INSERT INTO resurfacing_meter (rink_code,metered_on,passes,volume_liters,source_ticket)
                VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING *""",
@@ -86,17 +91,21 @@ def meter(code: str, body: MeterEntry, _=Operator):
         ).fetchone()
         if new is None:
             raise HTTPException(409, "该日或计量票据已登记")
-        cx.execute("UPDATE ice_rinks SET meter_revision=meter_revision+1 WHERE code=%s", (code,))
-        return new
+        revision = cx.execute(
+            "UPDATE ice_rinks SET meter_revision=meter_revision+1 WHERE code=%s RETURNING meter_revision", (code,)
+        ).fetchone()["meter_revision"]
+        return {**new, "shift_impacts": recompute_signed(cx, {**rink, "meter_revision": revision})}
 
 
 @router.get("/shifts")
 def shifts(_=Read):
     with db() as cx:
         return cx.execute(
-            """SELECT s.*, r.name AS rink_name, r.tank_liters, latest.id AS latest_forecast,
-                      latest.peak_segment_liters, latest.within_capacity,
+            """SELECT s.*, r.name AS rink_name, r.tank_liters,
+                      latest.id AS latest_forecast, latest.peak_segment_liters,
+                      latest.within_capacity,
                       CASE
+                        WHEN s.status='suspended' THEN 'suspended'
                         WHEN s.status='confirmed' THEN 'confirmed'
                         WHEN latest.id IS NULL THEN 'draft'
                         WHEN latest.plan_revision<>s.revision OR latest.meter_revision<>r.meter_revision THEN 'stale'
@@ -139,8 +148,9 @@ def forecasts(shift_id: int, _=Read):
         ).fetchall()
 
 
-def check_inputs(cx, rink, shift):
-    check_open_shift(shift)
+def check_inputs(cx, rink, shift, *, for_recompute=False):
+    if not for_recompute:
+        check_open_shift(shift)
     slots = list_bookings(cx, shift["id"])
     if not slots:
         raise HTTPException(409, "请先排定至少一个复冰预约")
@@ -151,7 +161,8 @@ def check_inputs(cx, rink, shift):
 def queue(shift_id: int, _=Analyst):
     with db() as cx:
         rink, shift = lock_shift(cx, shift_id)
-        check_inputs(cx, rink, shift)
+        check_recomputable(cx, rink, shift)
+        check_inputs(cx, rink, shift, for_recompute=True)
         return {"job_id": enqueue(cx, "forecast", {
             "shift_id": shift_id, "plan_revision": shift["revision"], "meter_revision": rink["meter_revision"],
         })}
@@ -164,13 +175,36 @@ def confirm(shift_id: int, body: Confirmation, actor=Reviewer):
         return confirm_shift(cx, rink, shift, body.forecast_id, actor["email"])
 
 
+@router.get("/shifts/{shift_id}/handover")
+def shift_handover(shift_id: int, _=Read):
+    with db() as cx:
+        return handover(cx, shift_id)
+
+
+@router.post("/shifts/{shift_id}/supplements", status_code=201)
+def supplement(shift_id: int, body: Supplement, actor=Operator):
+    with db() as cx:
+        rink, shift = lock_shift(cx, shift_id)
+        return prepare(cx, rink, shift, body.forecast_id, body.note, actor["email"])
+
+
+@router.post("/shifts/{shift_id}/supplements/{supplement_id}/sign")
+def sign(shift_id: int, supplement_id: int, actor=Reviewer):
+    with db() as cx:
+        rink, shift = lock_shift(cx, shift_id)
+        outcome = sign_supplement(cx, rink, shift, supplement_id, actor["email"])
+    if "detail" in outcome:
+        raise HTTPException(409, outcome["detail"])
+    return outcome
+
+
 def run_job(cx, kind, payload):
     if kind != "forecast":
         raise ValueError(f"Unknown job: {kind}")
     rink, shift = lock_shift(cx, payload["shift_id"])
     if shift["revision"] != payload["plan_revision"] or rink["meter_revision"] != payload["meter_revision"]:
         raise HTTPException(409, "冰时或计量已变更，请重新提交预测")
-    slots, history = check_inputs(cx, rink, shift)
+    slots, history = check_inputs(cx, rink, shift, for_recompute=True)
     return evaluate(cx, rink, shift, slots, history)
 
 

@@ -36,6 +36,15 @@
 
 按各日总用水除以实际复冰次数形成 L/次序列。最近 12 天必须连续，最长使用 21 个连续计量日，最后一笔计量距计划日不得超过三天。Holt 加性趋势系数为 α=0.65 、β=0.25，初始趋势取首两日差值；用末 4 日逐日的一步预测与前一日实际值比较 MAE，平手采用前日值。获胜模型用全段历史预测目标日，按冰面设置增加预留并向上取整。每个满箱段用水等于含余量的每次备水量乘以该段的预约复冰次数。
 
+## 签报后的水票更正
+
+1. 复核员在对账页确认表码差后，系统用更正后的水票自动重算该冰面所有**尚未开工**的已签班次。
+2. 重算峰值高于原签报峰值时，班次转为 `suspended`：停用时间、停用原因、原签报峰值和抬高后的峰值一并留存，交接页显示“暂停执行”。
+3. 录入员调整冰时或补水空档、重新提交重算，再登记补单（引用某个重算版本并写明补排说明）。
+4. 复核员签署补单才放行。签署时若补单引用的不是最新水票或调整后的冰时（并发更正、再次改排），或峰值超过水箱容量，补单退回 `returned` 并记录原因，班次保持暂停。
+5. 同一张水票以相同结论重复复核不会再次重算，也不会重复挂起；改判为不同结论会被拒绝。停用记录按次留存，交接页可查历次原签报、停用原因、补单与当前可执行安排。
+
+
 ## 启动
 
 ```sh
@@ -54,7 +63,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 | db | PostgreSQL | 冰面、冰时、水票、预测和签报关联 |
 | redis | Redis | 登录限流和 worker 健康协作 |
 
-`backend/schema.sql` 定义约束；`backend/domain.py` 管理 API 和模型；`schedule.py` 约束冰时和补水；`forecast.py` 完成验证与计算；`rink_seed.py` 定义演示数据。前端业务在 `frontend/ice.js`。角色和任务枚举在 `backend/core.py`、`frontend/base.js`；预测方法和签报状态在 `backend/schema.sql`、`backend/forecast.py`、`backend/domain.py` 和 `frontend/ice.js`。
+`backend/schema.sql` 定义约束；`backend/domain.py` 管理 API 和模型；`schedule.py` 约束冰时和补水；`forecast.py` 完成验证与计算；`signing.py` 处理签报后停用与补单放行；`rink_seed.py` 定义演示数据。前端业务在 `frontend/ice.js`。角色和任务枚举在 `backend/core.py`、`frontend/base.js`；预测方法和签报状态在 `backend/schema.sql`、`backend/forecast.py`、`backend/domain.py` 和 `frontend/ice.js`。
 
 MIT License，见 `LICENSE`。
 
@@ -64,4 +73,4 @@ MIT License，见 `LICENSE`。
 - **机组派车**以最新放行巡检、冰面面积和场次空档为输入，在同机组跨冰面的已占时段之间找连续作业窗。每次复冰 8 分钟，补水再加 15 分钟。原冰时变化后撤回旧派车再安排。
 - **表码对账**用水表跨度含回零计算实际用水。超过 5% 与 10 L 中较大的容差后提交复核；确认表码差会保留原票、加记修正用量并使未签预测失效。
 
-`backend/migrations/` 采用增量结构，已有水票、预测和已签班次保留。
+`backend/migrations/` 采用增量结构，已有水票、预测和已签班次保留。签报后的水票更正流程见上文；`tests/test_correction_flow.py` 覆盖停用、补单退回与放行，运行前需可用 PostgreSQL（默认 `postgresql://app:pw@127.0.0.1:55432/business`，可用 `TEST_DATABASE_URL` 覆盖）。

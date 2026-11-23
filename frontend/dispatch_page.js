@@ -5,12 +5,12 @@ const nice = value => String(value).slice(0,5)
 export async function dispatch(root,user) {
   const [{crews,allocations},shifts,surveys] = await Promise.all([api('/api/crew-board'),api('/api/shifts'),api('/api/surveys')])
   const grouped = await Promise.all(shifts.map(async shift => (await api(`/api/shifts/${shift.id}/bookings`)).map(row=>({...row,shift}))))
-  const slots = grouped.flat().filter(row=>!allocations.some(a=>a.booking_id===row.id&&!a.revoked_at))
+  const slots = grouped.flat().filter(row=>!allocations.some(a=>a.booking_id===row.id&&!a.revoked_at)&&row.shift.status!=='suspended')
   const cleared = surveys.filter(row=>row.status==='cleared')
   root.innerHTML=`<article class="ice-board">${banner('复冰调度 · 机组占用','跨冰面班组派车','按每次 8 分钟和补水时长找连续空档，同时更新各机组的工作日占用。')}
     <div class="crew-layout"><section>${crews.map(crew=>`<section class="crew-strip"><h2>${h(crew.name)}</h2><p>覆盖 ${crew.max_surface_m2} m² · ${nice(crew.works_from)}–${nice(crew.works_until)}</p>
-      ${allocations.filter(a=>a.crew_code===crew.code).map(a=>`<article class="${a.stale?'allocation-stale':''}"><strong>${nice(a.starts)}–${nice(a.ends)} · ${h(a.booking_ref)}</strong>
-        <p>${h(a.service_day)} · ${h(a.rink_code)} · ${h(a.crew_label)}${a.revoked_at?' · 已撤回':a.stale?' · 冰时已变更，撤回后重派':''}</p>
+      ${allocations.filter(a=>a.crew_code===crew.code).map(a=>`<article class="${a.stale||a.halted?'allocation-stale':''}"><strong>${nice(a.starts)}–${nice(a.ends)} · ${h(a.booking_ref)}</strong>
+        <p>${h(a.service_day)} · ${h(a.rink_code)} · ${h(a.crew_label)}${a.revoked_at?' · 已撤回':a.halted?' · 班次暂停执行，补单放行前不得开工':a.stale?' · 冰时已变更，撤回后重派':''}</p>
         ${user.role==='operator'&&!a.revoked_at?`<form data-revoke="${a.id}"><button>撤回此派车</button>${signal}</form>`:''}</article>`).join('')||'<p>尚无派车。</p>'}</section>`).join('')}</section>
       <aside class="ice-panel"><h2>分配冰车</h2>${user.role==='operator'&&slots.length&&cleared.length?`<form id="assign" class="ice-form">
       <label>预约${options('booking_id',slots,r=>r.id,r=>`${r.shift.rink_name} · ${r.booking_ref} · ${nice(r.start_time)}`)}</label>

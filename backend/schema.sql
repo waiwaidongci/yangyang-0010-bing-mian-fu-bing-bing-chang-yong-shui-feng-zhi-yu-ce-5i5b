@@ -26,13 +26,20 @@ CREATE TABLE IF NOT EXISTS water_shifts (
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
-    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','blocked','ready','confirmed')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','blocked','ready','confirmed','suspended')),
     confirmed_by TEXT,
     confirmed_at TIMESTAMPTZ,
     confirmed_forecast BIGINT,
+    suspended_at TIMESTAMPTZ,
+    suspended_reason TEXT,
     UNIQUE (rink_code, operating_day, label),
     CHECK (start_time < end_time),
-    CHECK ((status='confirmed') = (confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL AND confirmed_forecast IS NOT NULL))
+    CONSTRAINT shift_signing_evidence CHECK (
+        (status IN ('confirmed','suspended')) = (confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL AND confirmed_forecast IS NOT NULL)
+    ),
+    CONSTRAINT shift_suspension_evidence CHECK (
+        (status='suspended') = (suspended_at IS NOT NULL AND suspended_reason IS NOT NULL)
+    )
 );
 
 CREATE TABLE IF NOT EXISTS ice_bookings (

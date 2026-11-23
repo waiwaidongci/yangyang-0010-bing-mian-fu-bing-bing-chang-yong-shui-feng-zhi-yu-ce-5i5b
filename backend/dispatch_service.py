@@ -29,6 +29,8 @@ def allocate(cx, body, actor):
     if booking is None:
         raise HTTPException(404, "冰时预约不存在")
     rink, shift = lock_shift(cx, booking["shift_id"])
+    if shift["status"] == "suspended":
+        raise HTTPException(409, "班次暂停执行，须由复核员签署补单放行后再派车")
     team = crew(cx, body.crew_code)
     survey = get_survey(cx, body.survey_id, lock=True)
     day = shift["operating_day"]

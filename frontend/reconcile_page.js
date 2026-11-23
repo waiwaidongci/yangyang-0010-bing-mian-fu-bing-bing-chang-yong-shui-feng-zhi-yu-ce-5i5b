@@ -2,9 +2,26 @@ import { api,h } from '/base.js'
 import { banner,bind,options,signal } from '/ice_tools.js'
 
 const state = {matched:'票表一致',pending:'差异待复核',retained:'保留原水票',corrected:'采用表码差'}
+let notice = ''
+const describe = impacts => {
+  if (!impacts.length) return ''
+  const counts = impacts.reduce((acc,row)=>{
+    const key = row.error ? 'failed' : row.suspended ? 'suspended' : 'current'
+    acc[key] = (acc[key]??0)+1
+    return acc
+  },{})
+  const parts = []
+  if (counts.suspended) parts.push(`${counts.suspended} 个待开工已签班次的峰值被抬高，已暂停执行`)
+  if (counts.current) parts.push(`${counts.current} 个班次重算后容量内`)
+  if (counts.failed) parts.push(`${counts.failed} 个班次无法重算`)
+  return `已用更正后的水票重算：${parts.join('，')}。暂停的班次须到班次签报页登记补单并由复核员签署。`
+}
 export async function reconcile(root,user) {
   const {registers,cases} = await api('/api/registers')
-  root.innerHTML=`<article class="ice-board">${banner('机械刻度 · 对账','复冰水票校核','跨回零按表盘周期计算。偏差超过 5% 或至少 10 L 的容限进入复核。')}
+  const shown = notice
+  notice = ''
+  root.innerHTML=`<article class="ice-board">${banner('机械刻度 · 对账','复冰水票校核','跨回零按表盘周期计算。偏差超过 5% 或至少 10 L 的容限进入复核。确认表码差会重算待开工的已签班次。')}
+    ${shown?`<p class="recon-notice" role="status">${h(shown)}</p>`:''}
     <div class="recon-layout"><section>${cases.map(row=>`<section class="meter-case ${h(row.state)}"><h2>${h(row.source_ticket)} · ${h(row.rink_name)} · ${h(state[row.state])}</h2>
       <dl><div><dt>原票</dt><dd>${row.ledger_liters} L</dd></div><div><dt>表码差</dt><dd>${row.measured_liters} L</dd></div>
       <div><dt>${row.rolled?'跨回零':'连续读数'}</dt><dd>${row.opening_mark} → ${row.closing_mark}</dd></div></dl>
@@ -17,6 +34,10 @@ export async function reconcile(root,user) {
       <label>计量日<input name="metered_on" type="date" required></label>
       <div class="pair"><label>起码<input name="opening_mark" type="number" min="0" required></label><label>止码<input name="closing_mark" type="number" min="0" required></label></div>
       <label>来源及拍照编号<input name="evidence" minlength="4" required></label><button>计算票表差</button>${signal}</form>`:'<p>录入员提交表码，复核员确认差异。</p>'}</aside></div></article>`
-  bind(root,'#mark-form',async body=>{await api('/api/registers/checks','POST',{...body,opening_mark:Number(body.opening_mark),closing_mark:Number(body.closing_mark)});await reconcile(root,user)})
-  bind(root,'[data-rink]',async (body,d)=>{await api(`/api/registers/checks/${d.rink}/${d.day}/resolve`,'POST',{...body,use_measured:body.use_measured==='true'});await reconcile(root,user)})
+  bind(root,'#mark-form',async body=>{notice='';await api('/api/registers/checks','POST',{...body,opening_mark:Number(body.opening_mark),closing_mark:Number(body.closing_mark)});await reconcile(root,user)})
+  bind(root,'[data-rink]',async (body,d)=>{
+    const result = await api(`/api/registers/checks/${d.rink}/${d.day}/resolve`,'POST',{...body,use_measured:body.use_measured==='true'})
+    notice = result.already_resolved ? '该水票已按同一结论复核，无需重复重算。' : describe(result.shift_impacts)
+    await reconcile(root,user)
+  })
 }

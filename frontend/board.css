@@ -30,7 +30,17 @@ body .signin { background: var(--sheet); color: var(--ink); border-radius: 0; bo
 .ice-board input, .ice-board select { font: inherit; border: 1px solid var(--line); border-radius: 0; padding: 6px 8px; color: var(--ink); background: var(--sheet); min-width: 0; max-width: 100%; }
 .seal { color: var(--blue); font-size: .83rem; font-weight: 700; padding: .3em .65em; border: 1px solid var(--blue); margin-block: .25rem; }
 .seal.blocked, .seal.stale { color: var(--ember); border-color: var(--ember); background: var(--ember-sheet); }
+.seal.suspended { color: var(--ember); border-color: var(--ember); background: var(--ember-sheet); font-weight: 750; }
 .seal.confirmed { color: oklch(38% .083 155); border-color: currentColor; }
+.suspension-banner { background: var(--ember-sheet); border-left: 5px solid var(--ember); color: var(--ember); padding: 14px; margin-bottom: 20px; }
+.suspension-banner h2 { color: var(--ember); }
+.suspension-banner p { margin: 3px 0; }
+.execution { list-style: none; margin: 0 0 14px; padding: 0; background: var(--sheet); border: 1px solid var(--line); }
+.execution li { padding: 8px 11px; border-bottom: 1px solid var(--line); }
+.execution li:last-child { border-bottom: 0; }
+.suspension-history { margin-top: 22px; }
+.suspension-record { background: var(--sheet); border-left: 3px solid var(--ember); padding: 10px 13px; margin-bottom: 10px; }
+.suspension-record p { margin: 2px 0; font-size: .87rem; }
 .board-split, .handover-layout { display: grid; grid-template-columns: minmax(0, 2.25fr) minmax(270px, 1fr); gap: 22px; align-items: start; }
 .ice-panel { padding: 16px; background: var(--pale); border-top: 4px solid var(--blue); }
 .ice-panel p { font-size: .86rem; }

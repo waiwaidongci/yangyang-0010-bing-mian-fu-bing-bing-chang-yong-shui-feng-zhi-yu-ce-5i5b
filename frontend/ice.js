@@ -4,7 +4,7 @@ import { dispatch } from '/dispatch_page.js'
 import { reconcile } from '/reconcile_page.js'
 
 const pages = { schedule: '冰时安排', meter: '复冰计量', forecast: '预测回测', shifts: '班次签报', inspection: '冰面巡检', dispatch: '机组派车', reconcile: '表码对账' }
-const states = { draft: '待计算', blocked: '超容量', ready: '待签审', stale: '待重算', confirmed: '已签报' }
+const states = { draft: '待计算', blocked: '超容量', ready: '待签审', stale: '待重算', suspended: '暂停执行', confirmed: '已签报' }
 const models = { holt: 'Holt 趋势平滑', last: '前日值基线' }
 let shiftId = null
 let rinkCode = 'R-A'
@@ -144,6 +144,121 @@ function segmentTable(report) {
     <td>${liters(report.backtest.tank_liters)}</td></tr>`).join('')}</tbody></table></div>`
 }
 
+function evidenceSummary(label, forecast) {
+  if (!forecast) return `<p>${h(label)}：尚无记录</p>`
+  return `<p>${h(label)}：预测 #${forecast.id} · 峰值 ${liters(forecast.peak_segment_liters)} · 每次 ${liters(forecast.projected_liters_per_pass)}
+    · ${forecast.within_capacity ? '容量内' : '<span class="error-text">超容量</span>'}</p>`
+}
+
+function executionList(rows) {
+  if (!rows.length) return '<p class="empty-ice">没有可执行的冰时安排。</p>'
+  return `<ul class="execution">${rows.map(row => `<li><strong>${clock(row.start_time)}–${clock(row.end_time)}</strong>
+    ${h(row.booking_ref)} · ${h(row.crew_label)} · ${row.passes} 次复冰</li>`).join('')}</ul>`
+}
+
+function deskNote(suspension) {
+  if (!suspension) return ''
+  const returned = suspension.supplements.find(item => item.status === 'returned')
+  if (!returned) return ''
+  return `<p class="error-text">补单 #${h(returned.id)} 已被退回：${h(returned.returned_reason)}</p>`
+}
+
+function suspensionHistory(history) {
+  if (!history.length) return ''
+  return `<section class="suspension-history"><h2>停用与补单记录</h2>${history.map(item => `<article class="suspension-record">
+    <p><strong>${item.released_at ? '已放行' : '暂停中'}</strong> · ${h(item.created_at)}</p>
+    <p>${h(item.reason)}</p>
+    <p>原签报峰值 ${liters(item.previous_peak)} · 更正重算峰值 ${liters(item.raised_peak)}</p>
+    ${item.supplements.length ? `<p>补单：${item.supplements.map(s =>
+      `#${s.id} ${h({prepared:'待签',signed:'已签',returned:'已退回'}[s.status])}${s.returned_reason ? `（${h(s.returned_reason)}）` : ''}`
+    ).join('；')}</p>` : '<p>尚未登记补单。</p>'}
+  </article>`).join('')}</section>`
+}
+
+async function shifts(outlet, user) {
+  const { shifts: list, selected } = await chosenShift()
+  const data = await api(`/api/shifts/${selected.id}/handover`)
+  const shift = data.shift
+  const suspended = shift.status === 'suspended'
+  const signed = data.signed
+  const candidate = suspended ? data.latest : null
+  outlet.innerHTML = `<article class="ice-board">${heading('早班交接 · 放行', '备水班次签报', '每个满箱区段都须容纳预计用水。水票更正抬高已签峰值时暂停执行，复核补单后再放行。')}
+    <div class="shift-select">${shiftSelect(list)} ${seal(shift.validation_state ?? shift.status)}</div>
+    ${suspended ? `<section class="suspension-banner" role="alert"><h2>班次已暂停执行</h2>
+      <p>${h(shift.suspended_reason)}</p>
+      <p>暂停时间 ${h(shift.suspended_at)}</p></section>` : ''}
+    <div class="handover-layout">
+      <section>
+        <h2>原签报</h2>
+        ${signed ? `<p>签审 ${h(signed.by)} · ${h(signed.at)}</p>${evidenceSummary('原签报证据', signed.forecast)}
+          ${!signed.evidence_current ? '<p class="error-text">水票已有更正，原签报引用更正前的旧水票。重算峰值未抬高，原签报继续有效。</p>' : ''}
+          ${segmentTable(signed.forecast)}` : '<p class="empty-ice">该班次尚未签报。</p>'}
+        <h2>当前可执行的安排</h2>
+        ${suspended
+          ? `<p class="error-text">暂停执行，补单签署前不得开工，没有可执行的备水安排。${candidate ? `候选重算峰值 ${liters(candidate.peak_segment_liters)}。` : ''}</p>
+             <h3>暂存的冰时</h3>${executionList(data.scheduling)}`
+          : shift.status === 'confirmed'
+            ? `<p>执行签报预测 #${h(data.executable?.id)}，当前水箱容量 ${liters(shift.tank_liters)}。</p>${segmentTable(data.executable)}`
+            : `<p>当前状态 ${h(states[shift.validation_state] ?? shift.status)}，尚未放行。</p>${executionList(data.scheduling)}`}
+        ${suspensionHistory(data.history)}
+      </section>
+      <aside class="ice-panel"><h2>${suspended ? '补单复核' : '签报与调整'}</h2>
+        ${suspended ? `
+          ${evidenceSummary('候选重算', candidate)}
+          ${candidate ? segmentTable(candidate) : '<p>请先重算候选峰值：在预测回测页提交重算。</p>'}
+          ${deskNote(data.suspension)}
+          ${data.pending_supplement ? `<p>补单 #${h(data.pending_supplement.id)} 待复核签署：${h(data.pending_supplement.note)}</p>`
+            : (user.role === 'operator' && candidate ? `<form id="supplement-form" class="ice-form">
+              <label>补单说明<input name="note" placeholder="已在 08:10 补满水箱" minlength="2" required></label>
+              <button>提交补单</button><output aria-live="polite"></output></form>`
+              : '<p>由录入员登记补单，复核员签署后放行。</p>')}
+          ${data.pending_supplement && user.role === 'reviewer' ? `<form id="sign-supplement"><button>签署补单放行</button><output aria-live="polite"></output></form>` : ''}
+          <p>补单峰值超过水箱 ${liters(shift.tank_liters)} 时会被退回。</p>`
+          : `${signed ? `<p>签审 ${h(signed.by)} · 预测 #${signed.forecast?.id}</p>` : ''}
+          ${user.role === 'reviewer' && data.latest && shift.status !== 'confirmed' ? '<form id="confirm-form"><button>确认备水班次</button><output aria-live="polite"></output></form>' : ''}
+          <p><a href="#forecast">转到预测回测 →</a></p>`}
+        ${user.role === 'operator' && shift.status !== 'confirmed' && data.scheduling.length ? `<h2>调整冰时与补水</h2>
+        <form id="refill-form" class="ice-form"><label>场次<select name="booking_id">
+        ${data.scheduling.map((r, index) => `<option value="${r.booking_id}" ${index === data.scheduling.length - 1 ? 'selected' : ''}>${h(r.booking_ref)} · ${h(r.crew_label)}</option>`).join('')}
+        </select></label>
+        <div class="pair"><label>调整后开始<input type="time" name="start_time" required></label>
+        <label>调整后结束<input type="time" name="end_time" required></label></div>
+        <label>补水记录<input name="refill_reason" placeholder="留空为不补水"></label>
+        <button>更新排程</button><output aria-live="polite"></output></form>` : ''}
+      </aside>
+    </div>
+  </article>`
+  bindShift(outlet, shifts, user)
+  handle(outlet.querySelector('#confirm-form'), async () => {
+    await api(`/api/shifts/${shift.id}/confirm`, 'POST', { forecast_id: data.latest.id })
+    await shifts(outlet, user)
+  })
+  handle(outlet.querySelector('#supplement-form'), async ({ note }) => {
+    await api(`/api/shifts/${shift.id}/supplements`, 'POST', { forecast_id: candidate.id, note })
+    await shifts(outlet, user)
+  })
+  handle(outlet.querySelector('#sign-supplement'), async () => {
+    const outcome = await api(`/api/shifts/${shift.id}/supplements/${data.pending_supplement.id}/sign`, 'POST')
+    await shifts(outlet, user)
+    return outcome
+  })
+  const form = outlet.querySelector('#refill-form')
+  if (form) {
+    const populate = () => {
+      const row = data.scheduling.find(r => r.booking_id === Number(form.elements.booking_id.value))
+      form.elements.start_time.value = clock(row.start_time)
+      form.elements.end_time.value = clock(row.end_time)
+      form.elements.refill_reason.value = row.refill_reason ?? ''
+    }
+    form.elements.booking_id.onchange = populate
+    populate()
+    handle(form, async ({ booking_id, refill_reason, ...times }) => {
+      await api(`/api/shifts/${shift.id}/bookings/${booking_id}`, 'PUT', { ...times, refill_reason: refill_reason.trim() || null })
+      await shifts(outlet, user)
+    })
+  }
+}
+
 async function forecast(outlet, user) {
   const { shifts, selected } = await chosenShift()
   const [report] = await api(`/api/shifts/${selected.id}/forecasts`)
@@ -166,56 +281,6 @@ async function forecast(outlet, user) {
     await waitJob(result.job_id)
     if (outlet.isConnected && shiftId === selected.id) await forecast(outlet, user)
   })
-}
-
-async function shifts(outlet, user) {
-  const { shifts: list, selected } = await chosenShift()
-  const [reports, rows] = await Promise.all([
-    api(`/api/shifts/${selected.id}/forecasts`), api(`/api/shifts/${selected.id}/bookings`)
-  ])
-  const latest = reports[0]
-  outlet.innerHTML = `<article class="ice-board">${heading('早班交接 · 放行', '备水班次签报', '每个满箱区段都须容纳预计用水。调整冰时或补水后，重算再签报。')}
-    <div class="shift-select">${shiftSelect(list)} ${seal(selected.validation_state)}</div>
-    <div class="handover-layout">
-      <section><h2>预计分段峰值 ${selected.peak_segment_liters != null ? liters(selected.peak_segment_liters) : '待计算'}</h2>
-      ${segmentTable(latest)}
-      <p>当前水箱容量 ${liters(selected.tank_liters)}。每次补水需为前场结束后预留至少 15 分钟。</p>
-      ${selected.validation_state === 'stale' ? '<p class="error-text">冰时或计量版本已变化，请到预测回测重算。</p>' : ''}
-      <p><a href="#forecast">转到预测回测 →</a></p>
-      ${selected.confirmed_by ? `<p>签审 ${h(selected.confirmed_by)} · 预测 #${selected.confirmed_forecast}</p>` : ''}
-      ${user.role === 'reviewer' && latest && selected.status !== 'confirmed' ? '<form id="confirm-form"><button>确认备水班次</button><output aria-live="polite"></output></form>' : ''}
-      </section>
-      ${user.role === 'operator' && selected.status !== 'confirmed' && rows.length ? `<aside class="ice-panel"><h2>调整冰时与补水</h2>
-        <form id="refill-form" class="ice-form"><label>场次<select name="booking_id">
-        ${rows.map((r, index) => `<option value="${r.id}" ${index === rows.length - 1 ? 'selected' : ''}>${h(r.booking_ref)} · ${h(r.crew_label)}</option>`).join('')}
-        </select></label>
-        <div class="pair"><label>调整后开始<input type="time" name="start_time" required></label>
-        <label>调整后结束<input type="time" name="end_time" required></label></div>
-        <label>补水记录<input name="refill_reason" placeholder="留空为不补水"></label>
-        <button>更新排程</button><output aria-live="polite"></output></form>
-       </aside>` : ''}
-    </div>
-  </article>`
-  bindShift(outlet, shifts, user)
-  handle(outlet.querySelector('#confirm-form'), async () => {
-    await api(`/api/shifts/${selected.id}/confirm`, 'POST', { forecast_id: latest.id })
-    await shifts(outlet, user)
-  })
-  const form = outlet.querySelector('#refill-form')
-  if (form) {
-    const populate = () => {
-      const row = rows.find(r => r.id === Number(form.elements.booking_id.value))
-      form.elements.start_time.value = clock(row.start_time)
-      form.elements.end_time.value = clock(row.end_time)
-      form.elements.refill_reason.value = row.refill_reason ?? ''
-    }
-    form.elements.booking_id.onchange = populate
-    populate()
-    handle(form, async ({ booking_id, refill_reason, ...times }) => {
-      await api(`/api/shifts/${selected.id}/bookings/${booking_id}`, 'PUT', { ...times, refill_reason: refill_reason.trim() || null })
-      await shifts(outlet, user)
-    })
-  }
 }
 
 const renderers = { schedule, meter, forecast, shifts, inspection, dispatch, reconcile }

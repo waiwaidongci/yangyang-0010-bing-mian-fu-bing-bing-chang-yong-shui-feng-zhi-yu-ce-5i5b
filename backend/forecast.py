@@ -5,6 +5,8 @@ from statistics import mean
 from fastapi import HTTPException
 from psycopg.types.json import Jsonb
 
+import signing
+
 MIN_DAYS = 12
 LOOKBACK = 21
 HOLDOUT = 4
@@ -87,6 +89,8 @@ def evaluate(cx, rink, shift, bookings, rows):
          Jsonb(segments)),
     ).fetchone()
     cx.execute(
-        "UPDATE water_shifts SET status=%s WHERE id=%s", ("ready" if within else "blocked", shift["id"])
+        "UPDATE water_shifts SET status=%s WHERE id=%s AND status NOT IN ('confirmed','suspended')",
+        ("ready" if within else "blocked", shift["id"]),
     )
+    signing.suspend_if_raised(cx, rink, shift, result)
     return result
